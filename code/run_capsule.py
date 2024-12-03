@@ -1,4 +1,6 @@
 """ top level run script """
+import s3fs
+from urllib.parse import urlparse
 
 import json
 import logging
@@ -9,6 +11,7 @@ import time
 from glob import glob
 from pathlib import Path
 from typing import List, Tuple, Union
+import shutil
 
 from aind_codeocean_api.codeocean import CodeOceanClient
 from aind_codeocean_api.models.data_assets_requests import (
@@ -232,56 +235,120 @@ def copy_intermediate_data(
     s3_path = f"s3://{bucket_path}/{new_dataset_name}"
     logger.info(f"Copy files to path {s3_path}")
 
-
     # Copying derived metadata
     output_dispatch_metadata = Path(output_dispatch_metadata)
     print(f"output_dispatch_metadata: {output_dispatch_metadata}")
-    # for out in utils.execute_command_helper(
-    #     f"aws s3 cp --recursive {output_dispatch_metadata} {s3_path}"
-    # ):
-    #     logger.info(out)
+
+    qc_file = "../data/quality_control.json" # TODO
+    shutil.copy(qc_file, f"{output_dispatch_metadata}/quality_control.json")
 
 
-    # # Copying prediction data
-    # output_prediction = "pred_outputs" # TODO: evaluation folder name
-    # dest_pred_path = f"{s3_path}/{output_prediction}"
+    #======================#
+    fs = s3fs.S3FileSystem()
+    url = urlparse(s3_path)
+    logger.info("url:", url)
 
-    # for pred_folder in pred_folders:
-    #     logger.info(f"Copying data from {pred_folder} to {dest_pred_path}")
-    #     pred_folder = Path(pred_folder)
+    if url.scheme != "s3":
+        raise NotImplementedError("Only s3 output_uri is supported, not {url.scheme}")
+        
+    file_names = [
+            "processing.json",
+            "quality_control.json",
+            "data_description.json",
+            "procedures.json",
+            "subject.json",
+            ]
 
-    #     if pred_folder.exists():
-    #         for out in utils.execute_command_helper(
-    #             f"aws s3 cp --recursive {pred_folder} {dest_pred_path}"
-    #         ):
-    #             logger.info(out)
-    #     else:
-    #         raise ValueError(f"Folder {pred_folder} does not exist!")
+    for file in file_names:
+        print(f"uploading ../results/output_aind_metadata/{file}")
+        fs.put(
+            f"../results/output_aind_metadata/{file}", url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
+        ) 
 
+    file_names = [
+        "eval_outputs/eval_outputs",
+        "pred_outputs",
+        ]
 
-    # # Copying evaluation data
-    # output_evaluation = "eval_outputs" # TODO: evaluation folder name
-    # dest_eval_path = f"{s3_path}/{output_evaluation}"
+    for file in file_names:
+        print(f"uploading data/{file}")
+        fs.put(
+            f"../data/{file}", url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
+        ) 
 
-    # for eval_folder in eval_folders:
-    #     logger.info(f"Copying data from {eval_folder} to {dest_eval_path}")
-    #     eval_folder = Path(eval_folder)
-
-    #     if eval_folder.exists():
-    #         for out in utils.execute_command_helper(
-    #             f"aws s3 cp --recursive {eval_folder} {dest_eval_path}"
-    #         ):
-    #             logger.info(out)
-    #     else:
-    #         raise ValueError(f"Folder {eval_folder} does not exist!")
-
-    # utils.save_string_to_txt(
-    #     f"Video prediction and evaluation dataset saved in: {s3_path}",
-    #     f"{results_folder}/output_video_pred_evaluation.txt",
-    # )
+    utils.save_string_to_txt(
+        f"Video prediction and evaluation dataset saved in: {s3_path}",
+        f"{results_folder}/output_video_pred_evaluation.txt",
+    )
 
     return s3_path
+def wait_for_data_availability(
+    co_client,
+    data_asset_id: str,
+    timeout_seconds: int = 300,
+    pause_interval=10,
+):
+    """
+    There is a lag between when a register data request is made and when the
+    data is available to be used in a capsule.
+    Parameters
+    ----------
+    data_asset_id : str
+    timeout_seconds : int
+        Roughly how long the method should check if the data is available.
+    pause_interval : int
+        How many seconds between when the backend is queried.
 
+    Returns
+    -------
+    requests.Response
+
+    """
+    num_of_checks = 0
+    break_flag = False
+    time.sleep(pause_interval)
+    response = co_client.get_data_asset(data_asset_id)
+
+    if ((pause_interval * num_of_checks) > timeout_seconds) or (
+        response.status_code == 200
+    ):
+        break_flag = True
+    while not break_flag:
+        time.sleep(pause_interval)
+        response = co_client.get_data_asset(data_asset_id)
+        num_of_checks += 1
+        if ((pause_interval * num_of_checks) > timeout_seconds) or (
+            response.status_code == 200
+        ):
+            break_flag = True
+    return response
+
+def make_data_viewable(co_client: CodeOceanClient, response_contents: dict):
+    """
+    Makes a registered dataset viewable
+
+    Parameters
+    ----------
+    co_client: CodeOceanClient
+        Code ocean client
+
+    response_contents: dict
+        Dictionary with the response
+        of the created data asset
+
+    """
+    data_asset_id = response_contents["id"]
+    response_data_available = wait_for_data_availability(co_client, data_asset_id)
+
+    if response_data_available.status_code != 200:
+        logger.info(f"Unable to find: {data_asset_id}")
+        return
+
+    # Make data asset viewable to everyone
+    update_data_perm_response = co_client.update_permissions(
+        data_asset_id=data_asset_id, everyone="viewer"
+    )
+    logger.info(f"Data asset viewable to everyone: {update_data_perm_response}")
 
 def dispatch(s3_path: str, results_folder: PathLike, bucket: str):
     """
@@ -301,70 +368,65 @@ def dispatch(s3_path: str, results_folder: PathLike, bucket: str):
 
     logger.info(f"Provided s3_path: {s3_path}")
 
-    codeocean_domain = os.getenv("API_KEY")
-    co_token = os.getenv("API_SECRET")
-
-    print(f"codeocean_domain: {codeocean_domain}")
-    print(f"co_token: {co_token}")
+    # codeocean_domain = os.environ["CODEOCEAN_DOMAIN"]
+    codeocean_domain="https://codeocean.allenneuraldynamics.org/"
+    co_token = os.environ["CUSTOM_KEY"]
     co_client = CodeOceanClient(domain=codeocean_domain, token=co_token)
 
-    print(f"co_client: {co_client}")
-
-
     # Getting path in S3
-    dataset_to_predict = s3_path
+    dataset_to_register = s3_path
 
     for modality in ["ecephys", "behavior"]:
         pattern = (
             modality + r"_\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
             r"_videoprocessed_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
         )
-        print(f"pattern: {pattern}")
-        found_pattern = re.findall(pattern=pattern, string=dataset_to_predict)
-        print(f"found_pattern: {found_pattern}")
+        logger.info(f"pattern: {pattern}")
+        found_pattern = re.findall(pattern=pattern, string=dataset_to_register)
+        logger.info(f"found_pattern: {found_pattern}")
 
         # Extract the data asset info
-        if len(found_pattern):
-            dataset_to_predict = found_pattern[0]
-            print(f"dataset_to_predict: {dataset_to_predict}")
+        if len(found_pattern)>0:
+            dataset_to_register = found_pattern[0]
+            logger.info(f"dataset_to_register: {dataset_to_register}")
 
             video_pred_eval_tags = [modality, "behavior-videos", "processed", "derived"] # TODO: add subject_id?
-            print(f"video_pred_eval_tags: {video_pred_eval_tags}")
+            logger.info(f"video_pred_eval_tags: {video_pred_eval_tags}")
 
 
-            # # Registering AWS data asset
-            # aws_source = Sources.AWS(
-            #     bucket=bucket,
-            #     prefix=dataset_to_predict,
-            #     keep_on_external_storage=True,
-            #     public=True,
-            # )
-            # source = Source(aws=aws_source)
+            # Registering AWS data asset
+            aws_source = Sources.AWS(
+                bucket=bucket,
+                prefix=dataset_to_register,
+                keep_on_external_storage=True,
+                public=True,
+            )
+            source = Source(aws=aws_source)
 
-            # create_data_asset_request = CreateDataAssetRequest(
-            #     name=dataset_to_predict,
-            #     tags=video_pred_eval_tags,
-            #     mount=dataset_to_predict,
-            #     source=source,
-            #     custom_metadata=None,
-            # )
+            create_data_asset_request = CreateDataAssetRequest(
+                name=dataset_to_register,
+                tags=video_pred_eval_tags,
+                mount=dataset_to_register,
+                source=source,
+                custom_metadata=None,
+            )
 
-            # input_json_data = json.loads(create_data_asset_request.json_string)
+            input_json_data = json.loads(create_data_asset_request.json_string)
 
-            # # Register the behavior video processed dataset
-            # try:
-            #     data_asset_reg_response = co_client.create_data_asset(
-            #         request=input_json_data
-            #     )
+            # Register the behavior video processed dataset
+            try:
+                data_asset_reg_response = co_client.create_data_asset(
+                    request=input_json_data
+                )
 
-            #     response_contents = data_asset_reg_response.json()
-            #     logger.info(f"Created data asset in Code Ocean: {response_contents}")
+                response_contents = data_asset_reg_response.json()
+                logger.info(f"Created data asset in Code Ocean: {response_contents}")
 
-            #     # Making the created data asset available for everyone
-            #     make_data_viewable(co_client, response_contents)
+                # Making the created data asset available for everyone
+                make_data_viewable(co_client, response_contents)
 
-            # except Exception as e:
-            #     logger.warning(f"Error registering data asset in the API call. Error: {e}")
+            except Exception as e:
+                logger.warning(f"Error registering data asset in the API call. Error: {e}")
 
         else:
             logger.warning("Error registering data asset")
@@ -394,8 +456,7 @@ def run():
             data_folder=data_folder,
             data_description_path="input_aind_metadata/data_description.json",
         )
-    print(f"dataset_name: {dataset_name}")
-    print(f"investigators: {investigators}")
+    logger.info(f"dataset_name: {dataset_name}")
 
     # Creating new metadata for videoprocessed dataset
     output_dispatch_metadata, new_dataset_name = create_derived_videoprocessed_metadata(
@@ -408,12 +469,12 @@ def run():
 
     bucket_path = "aind-open-data"
 
-    print(f"output_dispatch_metadata: {output_dispatch_metadata}")
-    print(f"pred_folders: {pred_folders}")
-    print(f"eval_folders: {eval_folders}")
-    print(f"new_dataset_name: {new_dataset_name}")
-    print(f"bucket_path: {bucket_path}")
-    print(f"results_folder: {results_folder}")
+    logger.info(f"bucket_path: {bucket_path}")
+    logger.info(f"new_dataset_name: {new_dataset_name}")
+    logger.info(f"output_dispatch_metadata: {output_dispatch_metadata}")
+    logger.info(f"pred_folders: {pred_folders}")
+    logger.info(f"eval_folders: {eval_folders}")
+    logger.info(f"results_folder: {results_folder}")
 
     s3_path = copy_intermediate_data(
         output_dispatch_metadata=output_dispatch_metadata,
@@ -425,7 +486,7 @@ def run():
         logger=logger,
     )
 
-    print(f"s3_path: {s3_path}")
+    logger.info(f"s3_path: {s3_path}")
 
     dispatch(
         s3_path=s3_path,

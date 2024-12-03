@@ -1,0 +1,12 @@
+environment_version: 1
+credentials:
+- type: aws
+  id: 9Ke3LDwVaUPGZNCY
+  description: AWS Assumable Role - aind-codeocean-power-user
+  access_key_id: AWS_ACCESS_KEY_ID
+  secret_access_key: AWS_SECRET_ACCESS_KEY
+  region: AWS_DEFAULT_REGION
+- type: general
+  id: B6AM8d0tew7rwoJS
+  description: co_api_token
+  value: CUSTOM_KEY

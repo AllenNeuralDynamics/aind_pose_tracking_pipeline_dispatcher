@@ -19,6 +19,48 @@ from pydantic import TypeAdapter
 PathLike = Union[str, Path]
 
 
+def execute_command_helper(
+    command: str,
+    print_command: bool = False,
+    stdout_log_file: Optional[PathLike] = None,
+) -> None:
+    """
+    Execute a shell command.
+
+    Parameters
+    ------------------------
+
+    command: str
+        Command that we want to execute.
+    print_command: bool
+        Bool that dictates if we print the command in the console.
+
+    Raises
+    ------------------------
+
+    CalledProcessError:
+        if the command could not be executed (Returned non-zero status).
+
+    """
+
+    if print_command:
+        print(command)
+
+    if stdout_log_file and len(str(stdout_log_file)):
+        save_string_to_txt("$ " + command, stdout_log_file, "a")
+
+    popen = subprocess.Popen(
+        command, stdout=subprocess.PIPE, universal_newlines=True, shell=True
+    )
+    for stdout_line in iter(popen.stdout.readline, ""):
+        yield str(stdout_line).strip()
+    popen.stdout.close()
+    return_code = popen.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, command)
+
+
+
 def compile_processing_jsons(
     processing_paths: List[str],
     output_general_processing: str,
@@ -65,6 +107,29 @@ def compile_processing_jsons(
     return output_filename
 
 
+
+def save_string_to_txt(txt: str, filepath: PathLike, mode="w") -> None:
+    """
+    Saves a text in a file in the given mode.
+
+    Parameters
+    ------------------------
+
+    txt: str
+        String to be saved.
+
+    filepath: PathLike
+        Path where the file is located or will be saved.
+
+    mode: str
+        File open mode.
+
+    """
+
+    with open(filepath, mode) as file:
+        file.write(txt + "\n")
+
+        
 def copy_file(input_filename: PathLike, output_filename: PathLike):
     """
     Copies a file to an output path
