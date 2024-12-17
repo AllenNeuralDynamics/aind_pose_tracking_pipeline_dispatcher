@@ -1,6 +1,7 @@
 """ top level run script """
 import s3fs
 from urllib.parse import urlparse
+import argparse
 
 import json
 import logging
@@ -75,7 +76,7 @@ def get_data_config(
     return behavior_dataset, investigators
 
 
-def create_derived_videoprocessed_metadata(
+def create_derived_PoseTracking_metadata(
     data_folder: PathLike, results_folder: PathLike, logger: logging.Logger
 ) -> Tuple[PathLike, str]:
     """
@@ -103,14 +104,14 @@ def create_derived_videoprocessed_metadata(
         of the dataset
     """
     logger.info("Generating derived data description")
-    raw_metadata_path = data_folder.joinpath("input_aind_metadata")
+    raw_metadata_path = data_folder
     output_dispatch_metadata = f"{results_folder}/output_aind_metadata"
     utils.create_folder(output_dispatch_metadata)
 
     new_dataset_name = utils.generate_data_description(
-        raw_data_description_path=raw_metadata_path.joinpath("data_description.json"),
+        raw_data_description_path= os.path.join(raw_metadata_path, "data_description.json"),
         dest_data_description=output_dispatch_metadata,
-        process_name="videoprocessed",
+        process_name="PoseTracking",
     )
 
     logger.info("Copying all available raw behavior metadata")
@@ -239,14 +240,13 @@ def copy_intermediate_data(
     output_dispatch_metadata = Path(output_dispatch_metadata)
     print(f"output_dispatch_metadata: {output_dispatch_metadata}")
 
-    qc_file = "../data/quality_control.json" # TODO
-    shutil.copy(qc_file, f"{output_dispatch_metadata}/quality_control.json")
+    for eval_folder in eval_folders:
+        qc_file = f"{eval_folder}/quality_control.json" # TODO
+        shutil.copy(qc_file, f"{output_dispatch_metadata}/quality_control.json")
 
-
-    #======================#
     fs = s3fs.S3FileSystem()
     url = urlparse(s3_path)
-    logger.info("url:", url)
+    logger.info(f"url: {url}")
 
     if url.scheme != "s3":
         raise NotImplementedError("Only s3 output_uri is supported, not {url.scheme}")
@@ -260,21 +260,19 @@ def copy_intermediate_data(
             ]
 
     for file in file_names:
-        print(f"uploading ../results/output_aind_metadata/{file}")
+        print(f"uploading {output_dispatch_metadata}/{file}")
         fs.put(
-            f"../results/output_aind_metadata/{file}", url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
+            f"{output_dispatch_metadata}/{file}", url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
         ) 
 
-    file_names = [
-        "eval_outputs/eval_outputs",
-        "pred_outputs",
-        ]
-
-    for file in file_names:
-        print(f"uploading data/{file}")
-        fs.put(
-            f"../data/{file}", url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
-        ) 
+    print(f"uploading {pred_folders}")
+    fs.put(
+        pred_folders, url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
+    ) 
+    print(f"uploading {eval_folders}")
+    fs.put(
+        eval_folders, url.netloc + url.path.rstrip("/") + "/", recursive=True, maxdepth=10
+    ) 
 
     utils.save_string_to_txt(
         f"Video prediction and evaluation dataset saved in: {s3_path}",
@@ -282,6 +280,7 @@ def copy_intermediate_data(
     )
 
     return s3_path
+    
 def wait_for_data_availability(
     co_client,
     data_asset_id: str,
@@ -379,7 +378,7 @@ def dispatch(s3_path: str, results_folder: PathLike, bucket: str):
     for modality in ["ecephys", "behavior"]:
         pattern = (
             modality + r"_\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
-            r"_videoprocessed_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
+            r"_PoseTracking_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
         )
         logger.info(f"pattern: {pattern}")
         found_pattern = re.findall(pattern=pattern, string=dataset_to_register)
@@ -432,17 +431,44 @@ def dispatch(s3_path: str, results_folder: PathLike, bucket: str):
             logger.warning("Error registering data asset")
 
 
+def find_matches_and_preceding(string, pattern):
+    """ find the location of the raw data"""
+    # Compile the regex pattern
+    regex = re.compile(pattern)
 
-def run():
+    matches = []
+    # Use finditer to get match objects
+    for match in regex.finditer(string):
+        matched_string = match.group()
+        # Get the substring before the match
+        preceding_chars = string[:match.start()]
+        matches.append(preceding_chars + matched_string)
+
+    return matches
+    
+def run(video_data_asset: PathLike):
     """ basic run function """
     # Absolute paths of common Code Ocean folders
-    data_folder = Path(os.path.abspath("../data"))
     results_folder = Path(os.path.abspath("../results"))
+    data_folder = Path(os.path.abspath("../data"))
 
+    # find the location of raw data asset
+    for modality in ["behavior", "ecephys"]:
+        pattern = modality + r"_\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
+        logger.info(f"pattern: {pattern}")
+        found_pattern = find_matches_and_preceding(string=video_data_asset, pattern=pattern)
+        logger.info(f"found_pattern: {found_pattern}")
+    
+        # Extract the data asset info
+        if len(found_pattern)>0:
+            data_folder = Path(os.path.join(data_folder, found_pattern[0]))
+            logger.info(f"data_folder: {data_folder}")
+            break
+            
     # It is assumed that these files
     # will be in the data folder
     required_input_elements = [
-        f"{data_folder}/input_aind_metadata/data_description.json",
+        f"{data_folder}/data_description.json",
     ]
 
     missing_files = utils.validate_capsule_inputs(required_input_elements)
@@ -454,18 +480,19 @@ def run():
 
     dataset_name, investigators = get_data_config(
             data_folder=data_folder,
-            data_description_path="input_aind_metadata/data_description.json",
+            data_description_path="data_description.json",
         )
     logger.info(f"dataset_name: {dataset_name}")
+    logger.info(f"investigators: {investigators}")
 
-    # Creating new metadata for videoprocessed dataset
-    output_dispatch_metadata, new_dataset_name = create_derived_videoprocessed_metadata(
+    # Creating new metadata for PoseTracking dataset
+    output_dispatch_metadata, new_dataset_name = create_derived_PoseTracking_metadata(
         data_folder=data_folder, results_folder=results_folder, logger=logger
     )
 
-    # get prediction and evaluation outputs
-    pred_folders = glob(f"{data_folder}/pred_outputs")
-    eval_folders = glob(f"{data_folder}/eval_outputs/eval_outputs") # TODO
+    # get prediction and evaluation outputs 
+    pred_folders = [os.path.join(data_folder, "pred_outputs")]
+    eval_folders = [os.path.join(data_folder, "eval_outputs")] 
 
     bucket_path = "aind-open-data"
 
@@ -494,4 +521,17 @@ def run():
         bucket=bucket_path,
     )
 
-if __name__ == "__main__": run()
+if __name__ == "__main__": 
+    # parse commandline args
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--video_data_asset",
+        type=str,
+        default=None,
+        required=True,
+        help="Data asset of the testing video directory/file",
+    )
+    
+    args = parser.parse_args()
+    run(**vars(args))
+    

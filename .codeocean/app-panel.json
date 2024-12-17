@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"parameters": [
+		{
+			"id": "84ZyOpKe8rdJCk8Y",
+			"name": "video_data_asset",
+			"description": "Data asset of the testing video directory/file",
+			"type": "text",
+			"value_type": "string",
+			"required": true
+		}
+	]
+}

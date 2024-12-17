@@ -2,18 +2,6 @@
 	"version": 1,
 	"attached_datasets": [
 		{
-			"id": "347bcbc3-ab2b-451b-8d8b-2a8094d715b6",
-			"mount": "eval_outputs"
-		},
-		{
-			"id": "7fc9d74b-b9fb-49c8-9633-a13f8e3c232f",
-			"mount": "rigID_cameraName"
-		},
-		{
-			"id": "bc6b401c-2716-4e8b-a948-49659f3e218a",
-			"mount": "pred_outputs"
-		},
-		{
 			"id": "f0ae51fb-4525-4a12-ba48-87e26c708e3f",
 			"mount": "ecephys_713655_2024-08-08_11-52-03"
 		}
